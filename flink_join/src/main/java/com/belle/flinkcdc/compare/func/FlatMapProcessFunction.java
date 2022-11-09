@@ -26,7 +26,8 @@ public class FlatMapProcessFunction extends RichFlatMapFunction<String, JsonNode
         if (!operation.equals("delete") && !operation.equals("update") ){
             JsonNode location = dctJsonPre.get("location");
             JsonNode id = location.get("id");
-            if (id != null){
+            JsonNode update_time = location.get("update_time");
+            if (id != null && update_time !=null){
                 out.collect(dctJsonPre);
             }
         }
