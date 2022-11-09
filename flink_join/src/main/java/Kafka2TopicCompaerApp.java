@@ -1,53 +1,49 @@
 import com.belle.flinkcdc.compare.func.FlatMapProcessFunction;
-import com.belle.flinkcdc.compare.func.JoinProcessFunction;
 import com.belle.flinkcdc.compare.func.KeyProcessFunction;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.FlatJoinFunction;
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.JoinFunction;
-import org.apache.flink.api.common.functions.RichJoinFunction;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
-import org.apache.flink.api.java.functions.FlatMapIterator;
-import org.apache.flink.api.java.functions.KeySelector;
+import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.calcite.shaded.com.fasterxml.jackson.databind.JsonNode;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
 import org.apache.flink.streaming.api.datastream.DataStream;
-import org.apache.flink.streaming.api.datastream.DataStreamSource;
 import org.apache.flink.streaming.api.datastream.SingleOutputStreamOperator;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.connector.kafka.source.KafkaSource;
-import org.apache.flink.streaming.api.windowing.assigners.EventTimeSessionWindows;
-import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.util.Collector;
 
-import java.util.Iterator;
+import java.sql.Timestamp;
+
 
 /**
  * @author zhuhaohao
  * @version 1.0
  * @date 2022/11/7/007 22:06
  */
+@Slf4j
 public class Kafka2TopicCompaerApp {
 
-    private static String KAFKASERVER ="szsjhl-damai-mysql-test-10-10-223-19-belle.lan:9092,szsjhl-edcp-mysql-test-10-10-223-20-belle.lan:9092,szsjhl-damai-mysql-test-10-10-223-16-belle.lan:9092";
-
-
     // 本次要做的内容为，实现两个kafka中的数据进行比较，通过双流join的方式实现
-
     public static void main(String[] args) throws Exception {
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
-
+        ParameterTool params = ParameterTool.fromArgs(args);
+        String dctsourcetopic = params.get("dctsourcetopic");
+        String cdcsourcetopic = params.get("cdcsourcetopic");
+        String dctsourceserver = params.get("dctsourceserver");
+        String cdcsourceserver = params.get("cdcsourceserver");
+        String starttime = params.get("starttime");
+        String stoptime = params.get("stoptime");
         env.setParallelism(1);
-
+        env.setRuntimeMode(RuntimeExecutionMode.BATCH);
         //指定时间进行消费，方便两个数据流的数据尽可能一致
         //时间为15:50
-        Long timeStamp = 1667893800000l;
-
-        SingleOutputStreamOperator<JsonNode>  dctSource = env.fromSource(kafkaConsumer("topic_dp_11_dct_format_tmp",timeStamp), WatermarkStrategy.noWatermarks(), "dctSource").flatMap(new FlatMapProcessFunction());
-        SingleOutputStreamOperator<JsonNode>  cdcSource = env.fromSource(kafkaConsumer("topic_dp_11_cdc_format_tmp", timeStamp), WatermarkStrategy.noWatermarks(), "cdcSource").flatMap(new FlatMapProcessFunction());
-
+        Long starttimeStamp = Timestamp.valueOf(starttime).getTime();
+        Long stoptimeStamp =  Timestamp.valueOf(stoptime).getTime();
+        SingleOutputStreamOperator<JsonNode>  dctSource = env.fromSource(kafkaConsumer(dctsourcetopic,dctsourceserver,starttimeStamp,stoptimeStamp), WatermarkStrategy.noWatermarks(), "dctSource").flatMap(new FlatMapProcessFunction());
+        SingleOutputStreamOperator<JsonNode>  cdcSource = env.fromSource(kafkaConsumer(cdcsourcetopic,cdcsourceserver,starttimeStamp,stoptimeStamp), WatermarkStrategy.noWatermarks(), "cdcSource").flatMap(new FlatMapProcessFunction());
         //做双流join
         DataStream<String> judgeResult = dctSource.join(cdcSource)
                 .where(new KeyProcessFunction())
@@ -57,12 +53,8 @@ public class Kafka2TopicCompaerApp {
                 .apply(getFunction());
 
         judgeResult.print();
-
-
-
         env.execute();
     }
-
 
     private static JoinFunction<JsonNode, JsonNode, String> getFunction() {
         return new JoinFunction<JsonNode, JsonNode, String>() {
@@ -70,22 +62,27 @@ public class Kafka2TopicCompaerApp {
             public String join(JsonNode dctJson, JsonNode cdcJson) throws Exception {
                 JsonNode dctJsonRows = dctJson.get("data").get("rows");
                 JsonNode cdcJsonRows = cdcJson.get("data").get("rows");
-                return dctJsonRows + "=>" + cdcJsonRows;
+                if(dctJsonRows.equals(cdcJsonRows)){
+                    log.info("比对正确");
+                    return "比对结果正确";
+                }else {
+                    log.error(dctJsonRows + ">>" + cdcJson);
+                    return "!对比ERROR";
+                }
             }
         };
     }
 
-
-    public static KafkaSource<String> kafkaConsumer(String topic,Long timestamp){
+    public static KafkaSource<String> kafkaConsumer(String topic,String server,Long startimestamp,Long stopimestamp){
         // kafkasource 读取源数据
         KafkaSource<String> source = KafkaSource.<String>builder()
-                .setBootstrapServers(KAFKASERVER)
+                .setBootstrapServers(server)
                 .setTopics(topic)
                 .setGroupId("compare-cdc-dct-format")
-                .setStartingOffsets(OffsetsInitializer.timestamp(timestamp))
+                .setStartingOffsets(OffsetsInitializer.timestamp(startimestamp))
+                .setBounded(OffsetsInitializer.timestamp(stopimestamp))
                 .setValueOnlyDeserializer(new SimpleStringSchema())
                 .build();
         return source;
     }
-
 }
