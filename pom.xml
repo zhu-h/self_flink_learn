@@ -10,6 +10,8 @@
     <version>1.0</version>
     <modules>
         <module>flink_join</module>
+        <module>config_flink</module>
+        <module>flink-cdc-dc</module>
     </modules>
 
     <properties>
