@@ -13,7 +13,7 @@ import org.apache.flink.util.Collector;
  * @author : zhuhaohao
  * @date :
  */
-public class DatabaseTableCountFlatFunction extends RichFlatMapFunction<Tuple2<Integer, String>, Tuple3<String,String,Integer>> {
+public class DatabaseTableCountFlatFunction extends RichFlatMapFunction<Tuple3<Integer, String,String>, Tuple3<String,String,Integer>> {
 
         private ObjectMapper mapper;
         @Override
@@ -22,7 +22,7 @@ public class DatabaseTableCountFlatFunction extends RichFlatMapFunction<Tuple2<I
             mapper = new ObjectMapper();
         }
         @Override
-        public void flatMap(Tuple2<Integer, String> value, Collector<Tuple3<String,String,Integer>> out) throws Exception {
+        public void flatMap(Tuple3<Integer, String,String> value, Collector<Tuple3<String,String,Integer>> out) throws Exception {
             if (value.f0 == 1){
                 JsonNode cdcJsonNode = mapper.readTree(value.f1);
                 JsonNode header = cdcJsonNode.get("header");

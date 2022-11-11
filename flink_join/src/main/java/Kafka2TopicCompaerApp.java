@@ -4,19 +4,14 @@ import com.belle.flinkcdc.compare.func.KeyProcessFunction;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.flink.api.common.RuntimeExecutionMode;
 import org.apache.flink.api.common.eventtime.WatermarkStrategy;
-import org.apache.flink.api.common.functions.FlatMapFunction;
 import org.apache.flink.api.common.functions.JoinFunction;
-import org.apache.flink.api.common.functions.MapFunction;
-import org.apache.flink.api.common.functions.RichFlatMapFunction;
+import org.apache.flink.api.common.serialization.SerializationSchema;
 import org.apache.flink.api.common.serialization.SimpleStringSchema;
 import org.apache.flink.api.java.functions.KeySelector;
 import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.api.java.utils.ParameterTool;
 import org.apache.flink.calcite.shaded.com.fasterxml.jackson.databind.JsonNode;
-import org.apache.flink.calcite.shaded.com.fasterxml.jackson.databind.ObjectMapper;
-import org.apache.flink.configuration.Configuration;
-import org.apache.flink.connector.base.DeliveryGuarantee;
 import org.apache.flink.connector.kafka.sink.KafkaRecordSerializationSchema;
 import org.apache.flink.connector.kafka.sink.KafkaSink;
 import org.apache.flink.connector.kafka.source.enumerator.initializer.OffsetsInitializer;
@@ -27,7 +22,6 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.connector.kafka.source.KafkaSource;
 import org.apache.flink.streaming.api.windowing.assigners.TumblingProcessingTimeWindows;
 import org.apache.flink.streaming.api.windowing.time.Time;
-import org.apache.flink.util.Collector;
 import org.apache.kafka.clients.producer.ProducerConfig;
 
 
@@ -66,7 +60,7 @@ public class Kafka2TopicCompaerApp {
         SingleOutputStreamOperator<JsonNode>  dctSource = env.fromSource(kafkaConsumer(dctsourcetopic,dctsourceserver,starttimeStamp,stoptimeStamp), WatermarkStrategy.noWatermarks(), "dctSource").flatMap(new FlatMapProcessFunction());
         SingleOutputStreamOperator<JsonNode>  cdcSource = env.fromSource(kafkaConsumer(cdcsourcetopic,cdcsourceserver,starttimeStamp,stoptimeStamp), WatermarkStrategy.noWatermarks(), "cdcSource").flatMap(new FlatMapProcessFunction());
         //做双流join
-        DataStream<Tuple2<Integer,String>> judgeResult = dctSource.join(cdcSource)
+        DataStream<Tuple3<Integer,String,String>> judgeResult = dctSource.join(cdcSource)
                 .where(new KeyProcessFunction())
                 .equalTo(new KeyProcessFunction())
                 .window(TumblingProcessingTimeWindows.of(Time.seconds(10)))
@@ -82,26 +76,31 @@ public class Kafka2TopicCompaerApp {
 
 
         //得到结果输出到kafka中
-//        tuple3Tuple2KeyedStream.sum(2).map(r->r.toString()).sinkTo(kafkaProducer(outputtopic,cdcsourceserver));
-        tuple3Tuple2KeyedStream.sum(2).map(r->r.toString()).print();
+        tuple3Tuple2KeyedStream.sum(2).map(r->r.toString()).sinkTo(kafkaProducer(outputtopic,cdcsourceserver));
 
 
-        //judgeResult.filter(r->r.f0==2).map(r->r.toString()).sinkTo(kafkaProducer(outputerrortopic,cdcsourceserver));
+        judgeResult.filter(r->r.f0==2).sinkTo(kafkaSinkKeyVal(outputerrortopic,cdcsourceserver));
 
 
         env.execute();
     }
 
-    private static JoinFunction<JsonNode, JsonNode, Tuple2<Integer,String>> getFunction() {
-        return new JoinFunction<JsonNode, JsonNode, Tuple2<Integer,String>>() {
+    private static JoinFunction<JsonNode, JsonNode, Tuple3<Integer,String,String>> getFunction() {
+        return new JoinFunction<JsonNode, JsonNode, Tuple3<Integer,String,String>>() {
             @Override
-            public Tuple2<Integer,String> join(JsonNode dctJson, JsonNode cdcJson) throws Exception {
+            public Tuple3<Integer,String,String> join(JsonNode dctJson, JsonNode cdcJson) throws Exception {
                 JsonNode dctJsonRows = dctJson.get("data").get("rows");
                 JsonNode cdcJsonRows = cdcJson.get("data").get("rows");
+                JsonNode header = dctJson.get("header");
+                JsonNode catalog = header.get("catalog");
+                JsonNode table = header.get("table");
+
+                String dbtbale = catalog + "->"+table;
+
                 if(dctJsonRows.equals(cdcJsonRows)){
-                    return new Tuple2<>(1,cdcJson+"");
+                    return new Tuple3<>(1,cdcJson+"",dbtbale);
                 }else {
-                    return new Tuple2<>(2,"!对比ERROR"+ dctJson +">>>"+ cdcJson);
+                    return new Tuple3<>(2,"!对比ERROR"+ dctJson +">>>"+ cdcJson,dbtbale);
                 }
             }
         };
@@ -133,6 +132,37 @@ public class Kafka2TopicCompaerApp {
 
         return sink;
     }
+
+
+    public static KafkaSink<Tuple3<Integer,String,String>> kafkaSinkKeyVal(String topic,String brokersServer){
+
+        KafkaSink<Tuple3<Integer, String, String>> sink = KafkaSink.<Tuple3<Integer, String, String>>builder()
+                .setBootstrapServers(brokersServer)
+                .setRecordSerializer(KafkaRecordSerializationSchema.builder()
+                        .setTopic(topic)
+                        .setKeySerializationSchema(new SerializationSchema<Tuple3<Integer, String, String>>() {
+                            @Override
+                            public byte[] serialize(Tuple3<Integer, String, String> element) {
+
+                                String keyVal = element.f2;
+                                return keyVal.getBytes();
+                            }
+                        }).setValueSerializationSchema(new SerializationSchema<Tuple3<Integer, String, String>>() {
+                            @Override
+                            public byte[] serialize(Tuple3<Integer, String, String> element) {
+                                String valueVal = element.f1;
+                                return valueVal.getBytes();
+                            }
+                        })
+                        .build()
+                )
+                .setKafkaProducerConfig(getKafkaProducerProps())
+                .build();
+
+        return sink;
+
+    }
+
     private static Properties getKafkaProducerProps() {
         Properties kafkaProducerConfig = new Properties();
 
